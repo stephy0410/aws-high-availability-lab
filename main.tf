@@ -104,45 +104,72 @@ resource "aws_security_group" "ec2" {
   }
 }
 
-# --- Self-signed TLS certificate, imported into ACM ---
-# No public domain is available in this Learner Lab account, so this generates
-# a self-signed cert and imports it into ACM (free, no Route53/domain purchase
-# needed) for the ALB's HTTPS listener. Browsers/curl will flag it as untrusted
-# (expected) but the traffic is real end-to-end TLS.
+# --- Trusted TLS certificate: Let's Encrypt via DNS-01, imported into ACM ---
+# No Route53/purchased domain is available in this Learner Lab account, so we
+# use a free DuckDNS subdomain instead. DuckDNS exposes an HTTP API that can
+# set the TXT record Let's Encrypt's DNS-01 challenge needs, which is enough
+# to prove domain ownership and get a real, publicly-trusted certificate.
+#
+# Caveat: DuckDNS only supports A records, not CNAME, and the ALB has no
+# static IP - so `null_resource.duckdns_a_record` below pushes whichever IP
+# the ALB currently resolves to. If AWS ever rotates that IP, re-run
+# `terraform apply` to repoint DuckDNS.
 
-resource "tls_private_key" "self" {
+resource "tls_private_key" "acme_account" {
   algorithm = "RSA"
   rsa_bits  = 2048
 }
 
-resource "tls_self_signed_cert" "self" {
-  private_key_pem = tls_private_key.self.private_key_pem
-
-  subject {
-    common_name  = "${var.instance_name}.local"
-    organization = "SD Lab03"
-  }
-
-  validity_period_hours = 8760 # 1 year
-  early_renewal_hours   = 720
-
-  allowed_uses = [
-    "key_encipherment",
-    "digital_signature",
-    "server_auth",
-  ]
+resource "acme_registration" "account" {
+  account_key_pem = tls_private_key.acme_account.private_key_pem
+  email_address   = var.letsencrypt_email
 }
 
-resource "aws_acm_certificate" "self" {
-  private_key      = tls_private_key.self.private_key_pem
-  certificate_body = tls_self_signed_cert.self.cert_pem
+resource "null_resource" "duckdns_a_record" {
+  triggers = {
+    alb_dns_name = aws_lb.this.dns_name
+  }
+
+  provisioner "local-exec" {
+    environment = {
+      DUCKDNS_TOKEN     = var.duckdns_token
+      DUCKDNS_SUBDOMAIN = var.duckdns_subdomain
+      ALB_DNS_NAME      = aws_lb.this.dns_name
+    }
+
+    command = <<-EOT
+      set -euo pipefail
+      IP=$(dig +short "$ALB_DNS_NAME" | grep -E '^[0-9]+\.' | head -n1)
+      curl -fsS "https://www.duckdns.org/update?domains=$DUCKDNS_SUBDOMAIN&token=$DUCKDNS_TOKEN&ip=$IP" >/dev/null
+    EOT
+  }
+}
+
+resource "acme_certificate" "web" {
+  account_key_pem = acme_registration.account.account_key_pem
+  common_name     = "${var.duckdns_subdomain}.duckdns.org"
+
+  dns_challenge {
+    provider = "duckdns"
+    config = {
+      DUCKDNS_TOKEN = var.duckdns_token
+    }
+  }
+
+  depends_on = [null_resource.duckdns_a_record]
+}
+
+resource "aws_acm_certificate" "letsencrypt" {
+  private_key       = acme_certificate.web.private_key_pem
+  certificate_body  = acme_certificate.web.certificate_pem
+  certificate_chain = acme_certificate.web.issuer_pem
 
   lifecycle {
     create_before_destroy = true
   }
 
   tags = {
-    Name = "${var.instance_name}-self-signed"
+    Name = "${var.instance_name}-letsencrypt"
   }
 }
 
@@ -247,14 +274,14 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-# HTTPS listener: terminate TLS with the self-signed ACM cert, forward round robin
+# HTTPS listener: terminate TLS with the Let's Encrypt cert, forward round robin
 # to whichever instances the ASG currently has registered.
 resource "aws_lb_listener" "https" {
   load_balancer_arn = aws_lb.this.arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate.self.arn
+  certificate_arn   = aws_acm_certificate.letsencrypt.arn
 
   default_action {
     type             = "forward"

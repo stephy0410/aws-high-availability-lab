@@ -52,6 +52,30 @@ variable "allowed_ssh_cidr" {
   default     = null
 }
 
+# --- Trusted HTTPS: Let's Encrypt via DuckDNS DNS-01 ---
+
+variable "duckdns_subdomain" {
+  description = "Your free DuckDNS subdomain, without \".duckdns.org\" (e.g. \"sd-lab03\" for sd-lab03.duckdns.org). Sign up free at https://www.duckdns.org"
+  type        = string
+}
+
+variable "duckdns_token" {
+  description = "DuckDNS account token, found on your DuckDNS dashboard after logging in"
+  type        = string
+  sensitive   = true
+}
+
+variable "letsencrypt_email" {
+  description = "Contact email registered with Let's Encrypt for this certificate (used only for expiry/revocation notices)"
+  type        = string
+}
+
+variable "letsencrypt_staging" {
+  description = "Use Let's Encrypt's staging environment (uncapped rate limits, but the cert is NOT trusted by browsers). Keep true while testing, set to false once it works to get a real trusted certificate."
+  type        = bool
+  default     = true
+}
+
 # --- Elasticity: Auto Scaling Group bounds ---
 
 variable "min_size" {

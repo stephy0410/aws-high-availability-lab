@@ -1,6 +1,6 @@
 output "web_url" {
-  description = "HTTPS URL of the load-balanced app (self-signed cert - browsers/curl will warn; use curl -k)"
-  value       = "https://${aws_lb.this.dns_name}"
+  description = "HTTPS URL of the load-balanced app, via the DuckDNS domain. Trusted by browsers once letsencrypt_staging = false (while true, the cert is Let's Encrypt staging and still untrusted)"
+  value       = "https://${var.duckdns_subdomain}.duckdns.org"
 }
 
 output "alb_dns_name" {
@@ -35,5 +35,5 @@ output "load_test_cmd" {
 
 output "round_robin_check_cmd" {
   description = "Run this a few times to see requests land on different instances once the group has scaled out"
-  value       = "for i in $(seq 1 10); do curl -sk https://${aws_lb.this.dns_name}/api/whoami; echo; done"
+  value       = "for i in $(seq 1 10); do curl -sk https://${var.duckdns_subdomain}.duckdns.org/api/whoami; echo; done"
 }

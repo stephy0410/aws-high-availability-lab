@@ -14,6 +14,14 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
+    acme = {
+      source  = "vancluever/acme"
+      version = "~> 2.0"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
   }
 
   # Remote state in the same pre-existing S3 bucket used by lab02, under its own key.
