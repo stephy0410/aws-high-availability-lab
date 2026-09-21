@@ -65,6 +65,14 @@ terraform apply
 
 Al terminar, `terraform output web_url` da la URL HTTPS del load balancer.
 
+## Dashboard en vivo (frontend)
+
+La propia app (`user_data.sh`) sirve una página que hace polling a `/api/whoami` cada ~1.5s y muestra en vivo:
+instancia actual, "instancias distintas vistas en esta sesión" (1 en reposo, sube a 3 bajo carga y vuelve a 1),
+la distribución de respuestas por instancia y un log de las últimas peticiones. Ábrela en el navegador
+(`terraform output -raw web_url`, aceptando el warning del cert self-signed) y déjala abierta mientras corres
+la prueba de carga del siguiente apartado — es la forma más directa de *ver* el auto scaling ocurriendo.
+
 ## Cómo probar la elasticidad
 
 1. Confirma que arrancó con 1 sola instancia:

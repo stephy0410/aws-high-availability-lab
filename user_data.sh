@@ -74,6 +74,9 @@ async function main() {
 
     if (req.url === '/api/whoami') {
       hitCount += 1;
+      // Force the underlying TCP connection closed after this response, so the
+      // browser opens a fresh connection on its next poll and the ALB gets a
+      // brand new routing decision each time -> new ASG instances become visible live.
       res.writeHead(200, { 'Content-Type': 'application/json', Connection: 'close' });
       res.end(JSON.stringify({ hostname, hits: hitCount, ...meta }));
       return;
@@ -92,7 +95,7 @@ async function main() {
     * { box-sizing: border-box; }
     body {
       font-family: system-ui, -apple-system, sans-serif;
-      max-width: 42rem;
+      max-width: 44rem;
       margin: 0 auto;
       padding: 2.5rem 1.25rem 4rem;
       color: #10241f;
@@ -102,29 +105,144 @@ async function main() {
     .sub { color: #4d7a6c; margin-top: 0; margin-bottom: 1.75rem; }
     .badge { display: inline-block; background: linear-gradient(135deg, #0b3b2e, #1f7a5c); color: #eafff4; border-radius: 999px; padding: 0.15rem 0.75rem; font-size: 0.75rem; vertical-align: middle; }
     .card { border: 1px solid #d9ece4; border-radius: 16px; padding: 1.5rem 1.75rem; background: #ffffff; box-shadow: 0 1px 3px rgba(11, 59, 46, 0.08); margin-bottom: 1.25rem; }
+    .current-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+    .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; box-shadow: 0 0 0 4px rgba(11, 59, 46, 0.06); }
+    .current-row h2 { font-size: 1.1rem; margin: 0; color: #0b3b2e; }
     dl { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 1rem; margin: 0; }
     dt { font-weight: 600; color: #4d7a6c; font-size: 0.85rem; }
     dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
+    .card h3 { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.04em; color: #4d7a6c; margin: 0 0 0.9rem; }
+    .scale-count { font-size: 2.25rem; font-weight: 700; color: #0b3b2e; }
+    .scale-hint { color: #4d7a6c; font-size: 0.85rem; margin-top: 0.25rem; }
+    .dist-row { display: grid; grid-template-columns: 9.5rem 1fr 5.5rem; align-items: center; gap: 0.6rem; margin-bottom: 0.55rem; font-size: 0.85rem; }
+    .dist-label { font-family: ui-monospace, monospace; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dist-bar-bg { background: #dff2ea; border-radius: 999px; height: 10px; overflow: hidden; }
+    .dist-bar { height: 100%; border-radius: 999px; transition: width 0.4s ease; }
+    .dist-pct { text-align: right; color: #4d7a6c; }
+    ul#log { list-style: none; margin: 0; padding: 0; max-height: 14rem; overflow-y: auto; font-size: 0.85rem; }
+    ul#log li { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #e5f0ec; font-family: ui-monospace, monospace; }
+    ul#log li .dot { width: 9px; height: 9px; box-shadow: none; }
+    button#ping-now { border: none; background: #0b3b2e; color: #eafff4; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.85rem; cursor: pointer; }
+    button#ping-now:hover { background: #092d23; }
     .foot { color: #4d7a6c; font-size: 0.8rem; margin-top: 1.5rem; line-height: 1.5; }
     .foot code { background: #dff2ea; color: #0b3b2e; padding: 0.1rem 0.35rem; border-radius: 4px; }
   </style>
 </head>
 <body>
   <h1>High availability app <span class="badge">lab03</span></h1>
-  <p class="sub">ALB + Auto Scaling Group (1&ndash;3 EC2) &middot; HTTPS</p>
+  <p class="sub">ALB + Auto Scaling Group (1&ndash;3 EC2) &middot; HTTPS &middot; scales out on CPU load, back to 1 at rest</p>
+
   <div class="card">
+    <div class="current-row">
+      <span class="dot" id="cur-dot" style="background:#0b3b2e"></span>
+      <h2>Currently served by <span id="cur-id" style="font-family: ui-monospace, monospace;">${meta.instanceId}</span></h2>
+    </div>
     <dl>
-      <dt>Instance ID</dt><dd>${meta.instanceId}</dd>
-      <dt>Private IPv4</dt><dd>${meta.localIpv4}</dd>
-      <dt>Availability zone</dt><dd>${meta.az}</dd>
+      <dt>Private IPv4</dt><dd id="cur-ip">${meta.localIpv4}</dd>
+      <dt>Availability zone</dt><dd id="cur-az">${meta.az}</dd>
       <dt>Hostname</dt><dd>${hostname}</dd>
-      <dt>Hits served</dt><dd>${hitCount}</dd>
     </dl>
   </div>
+
+  <div class="card">
+    <h3>Distinct instances seen (this browser session)</h3>
+    <div class="scale-count" id="scale-count">1</div>
+    <div class="scale-hint" id="scale-hint">Kick off a CPU load test and keep this page open &mdash; this number climbs to 3 as the ASG scales out, then drops back to 1 once load stops and the extra instances are terminated.</div>
+  </div>
+
+  <div class="card">
+    <h3>Live distribution</h3>
+    <div id="dist"><p style="color:#999; font-size:0.85rem;">Polling&hellip;</p></div>
+    <button id="ping-now" type="button">Ping now</button>
+  </div>
+
+  <div class="card">
+    <h3>Recent responses</h3>
+    <ul id="log"></ul>
+  </div>
+
   <p class="foot">
-    Reload to see the ALB route you to a different instance once the group scales out.
-    Certificate is self-signed (no public domain in this AWS Academy account) &mdash; browsers warn once; use <code>curl -k</code>.
+    This page polls <code>/api/whoami</code> every ~1.5s over a fresh connection each time, so as the ALB starts
+    routing to newly-launched ASG instances, their IDs appear here live &mdash; no manual reload needed.
+    Certificate is self-signed (no public domain available in this AWS Academy account), so your browser may warn
+    once; for the API directly: <code>curl -k</code>.
   </p>
+
+  <script>
+    var MAX_LOG = 12;
+    var palette = ['#0b3b2e', '#1f7a5c', '#c9a227', '#2f6690', '#a1717a', '#4a3728'];
+    var colors = {};
+    var colorIdx = 0;
+    var counts = {};
+    var log = [];
+
+    function colorFor(id) {
+      if (!colors[id]) {
+        colors[id] = palette[colorIdx % palette.length];
+        colorIdx++;
+      }
+      return colors[id];
+    }
+
+    function render(data) {
+      var id = data.instanceId;
+      counts[id] = (counts[id] || 0) + 1;
+      log.unshift({
+        instanceId: data.instanceId,
+        localIpv4: data.localIpv4,
+        time: new Date().toLocaleTimeString(),
+        color: colorFor(id)
+      });
+      if (log.length > MAX_LOG) log.pop();
+
+      document.getElementById('cur-id').textContent = data.instanceId;
+      document.getElementById('cur-ip').textContent = data.localIpv4;
+      document.getElementById('cur-az').textContent = data.az;
+      document.getElementById('cur-dot').style.background = colorFor(id);
+
+      var seen = Object.keys(counts).length;
+      document.getElementById('scale-count').textContent = seen;
+      document.getElementById('scale-hint').textContent = seen >= 3
+        ? 'Scaled out to the max (3) - stop the load test and this will settle back to 1.'
+        : seen > 1
+          ? 'Scaling out in progress - more than 1 instance is now answering.'
+          : 'At rest: only 1 instance answering so far in this session.';
+
+      var total = 0;
+      for (var k in counts) total += counts[k];
+
+      var distEl = document.getElementById('dist');
+      distEl.innerHTML = '';
+      for (var instId in counts) {
+        var c = counts[instId];
+        var pct = Math.round((c / total) * 100);
+        var row = document.createElement('div');
+        row.className = 'dist-row';
+        row.innerHTML =
+          '<span class="dist-label" style="color:' + colorFor(instId) + '">' + instId + '</span>' +
+          '<div class="dist-bar-bg"><div class="dist-bar" style="width:' + pct + '%; background:' + colorFor(instId) + '"></div></div>' +
+          '<span class="dist-pct">' + c + ' (' + pct + '%)</span>';
+        distEl.appendChild(row);
+      }
+
+      var logEl = document.getElementById('log');
+      logEl.innerHTML = log.map(function (l) {
+        return '<li><span class="dot" style="background:' + l.color + '"></span>' +
+          l.time + ' &mdash; <strong>' + l.instanceId + '</strong> (' + l.localIpv4 + ')</li>';
+      }).join('');
+    }
+
+    function ping() {
+      fetch('/api/whoami', { cache: 'no-store' })
+        .then(function (res) { return res.json(); })
+        .then(render)
+        .catch(function (err) { console.error(err); });
+    }
+
+    ping();
+    setInterval(ping, 1500);
+    document.getElementById('ping-now').addEventListener('click', ping);
+  </script>
 </body>
 </html>`);
   });
